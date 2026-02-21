@@ -2,6 +2,17 @@ export type PresetCityKey = 'tokyo' | 'osaka' | 'nagoya' | 'sapporo' | 'fukuoka'
 
 export type LocationSource = 'preset' | 'coordinates' | 'ip' | 'ip-fallback';
 
+export type LocationHierarchy = {
+  country: string;
+  state: string;
+  locality: string;
+  source: 'nominatim' | 'fallback';
+  raw: {
+    countryCode?: string;
+    iso3166Level4?: string;
+  };
+};
+
 export type ResolvedLocation = {
   name: string;
   latitude: number;
@@ -29,13 +40,16 @@ export type ForecastDay = {
 
 export type WeatherSnapshot = {
   updatedAt: string;
+  dateKey: string;
   location: ResolvedLocation;
+  hierarchy: LocationHierarchy;
   current: CurrentWeather;
   forecast: ForecastDay[];
 };
 
 export type WeatherCache = {
-  version: 1;
-  cacheKey: string;
+  version: 2;
+  dateKey: string;
+  locationPath: LocationHierarchy;
   snapshot: WeatherSnapshot;
 };

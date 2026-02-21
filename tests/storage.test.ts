@@ -2,8 +2,16 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, expect, test } from 'vitest';
-import { getCachePath, isCacheFresh, loadCache, saveCache, sanitizeCacheKey } from '../src/storage';
-import { type WeatherCache } from '../src/types';
+import {
+  formatDateKey,
+  getCachePath,
+  isCacheFresh,
+  loadCache,
+  parseDateKey,
+  sanitizePathSegment,
+  saveCache,
+} from '../src/storage';
+import { type LocationHierarchy, type WeatherCache } from '../src/types';
 
 const tempRoots: string[] = [];
 
@@ -19,12 +27,28 @@ function createTempRoot(): string {
   return root;
 }
 
-function sampleCache(updatedAt: string): WeatherCache {
+function sampleHierarchy(): LocationHierarchy {
   return {
-    version: 1,
-    cacheKey: 'tokyo',
+    country: 'Japan',
+    state: 'Tokyo',
+    locality: 'Taito',
+    source: 'nominatim',
+    raw: {
+      countryCode: 'JP',
+      iso3166Level4: 'JP-13',
+    },
+  };
+}
+
+function sampleCache(updatedAt: string, dateKey: string): WeatherCache {
+  return {
+    version: 2,
+    dateKey,
+    locationPath: sampleHierarchy(),
     snapshot: {
       updatedAt,
+      dateKey,
+      hierarchy: sampleHierarchy(),
       location: {
         name: 'Tokyo',
         latitude: 35.6895,
@@ -53,30 +77,49 @@ function sampleCache(updatedAt: string): WeatherCache {
   };
 }
 
-test('sanitizeCacheKey normalizes unsupported characters', () => {
-  expect(sanitizeCacheKey('Lat 35.7/Lon 139.7')).toBe('lat_35.7_lon_139.7');
+test('formatDateKey formats YYYY-MM-DD', () => {
+  expect(formatDateKey(new Date(2026, 1, 21))).toBe('2026-02-21');
+});
+
+test('parseDateKey validates yyyy-mm-dd', () => {
+  expect(parseDateKey('2026-02-21')).toEqual({ year: '2026', month: '02', day: '21' });
+  expect(() => parseDateKey('2026-02')).toThrow('dateKey must be yyyy-mm-dd.');
+  expect(() => parseDateKey('2026-02-30')).toThrow('dateKey must be a valid calendar date.');
+});
+
+test('sanitizePathSegment normalizes labels', () => {
+  expect(sanitizePathSegment('Tokyo Prefecture')).toBe('tokyo-prefecture');
+  expect(sanitizePathSegment(' Taito Ward ')).toBe('taito-ward');
+});
+
+test('getCachePath builds date and hierarchy directories', () => {
+  const cachePath = getCachePath('/tmp/weather', '2026-02-21', sampleHierarchy());
+  expect(cachePath).toBe('/tmp/weather/2026/02/21/japan/tokyo/taito/data.json');
 });
 
 test('saveCache and loadCache round-trip valid payload', () => {
   const tempRoot = createTempRoot();
-  const cache = sampleCache('2026-02-21T00:00:00.000Z');
+  const cache = sampleCache('2026-02-21T00:00:00.000Z', '2026-02-21');
+  const hierarchy = sampleHierarchy();
 
-  saveCache(tempRoot, cache.cacheKey, cache);
+  saveCache(tempRoot, cache.dateKey, hierarchy, cache);
 
-  const loaded = loadCache(tempRoot, cache.cacheKey);
+  const loaded = loadCache(tempRoot, cache.dateKey, hierarchy);
   expect(loaded).toEqual(cache);
 });
 
 test('loadCache returns null for invalid JSON payload', () => {
   const tempRoot = createTempRoot();
-  const cachePath = getCachePath(tempRoot, 'broken');
+  const hierarchy = sampleHierarchy();
+  const cachePath = getCachePath(tempRoot, '2026-02-21', hierarchy);
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
   fs.writeFileSync(cachePath, '{"invalid":true}', 'utf8');
 
-  expect(loadCache(tempRoot, 'broken')).toBeNull();
+  expect(loadCache(tempRoot, '2026-02-21', hierarchy)).toBeNull();
 });
 
 test('isCacheFresh checks ttl with snapshot updatedAt', () => {
-  const cache = sampleCache('2026-02-21T00:00:00.000Z');
+  const cache = sampleCache('2026-02-21T00:00:00.000Z', '2026-02-21');
   const now = new Date('2026-02-21T00:20:00.000Z').getTime();
 
   expect(isCacheFresh(cache, 30, now)).toBe(true);

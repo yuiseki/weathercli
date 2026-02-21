@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { parseCoordinateOption, parsePositiveIntegerOption } from '../src/index';
+import { parseCoordinateOption, parseDateOption, parsePositiveIntegerOption } from '../src/index';
 
 test('parsePositiveIntegerOption parses valid integer', () => {
   expect(parsePositiveIntegerOption('30', '--cache-ttl-minutes')).toBe(30);
@@ -25,5 +25,24 @@ test('parseCoordinateOption rejects invalid coordinates', () => {
   );
   expect(() => parseCoordinateOption('190', '--lon', -180, 180)).toThrow(
     '--lon must be between -180 and 180.',
+  );
+});
+
+test('parseDateOption resolves today when omitted', () => {
+  const parsed = parseDateOption(undefined, new Date(2026, 1, 21));
+  expect(parsed).toEqual({ dateKey: '2026-02-21', isToday: true });
+});
+
+test('parseDateOption parses explicit date', () => {
+  const parsed = parseDateOption('2026-02-20', new Date(2026, 1, 21));
+  expect(parsed).toEqual({ dateKey: '2026-02-20', isToday: false });
+});
+
+test('parseDateOption rejects invalid formats and values', () => {
+  expect(() => parseDateOption('2026-02', new Date(2026, 1, 21))).toThrow(
+    '--date format must be yyyy-mm-dd.',
+  );
+  expect(() => parseDateOption('2026-02-30', new Date(2026, 1, 21))).toThrow(
+    '--date must be a valid calendar date.',
   );
 });

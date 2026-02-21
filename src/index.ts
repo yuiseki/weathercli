@@ -2,6 +2,7 @@
 import path from 'path';
 import { Command } from 'commander';
 import { config, setConfigOverrides, type WeatherCliConfig } from './config';
+import { formatDateKey } from './storage';
 import {
   formatWeatherReport,
   loadWeather,
@@ -18,6 +19,7 @@ type CommonCommandOptions = {
   fukuoka?: boolean;
   lat?: string;
   lon?: string;
+  date?: string;
   json?: boolean;
   cacheDir?: string;
   cacheTtlMinutes?: string;
@@ -58,6 +60,42 @@ export function parseCoordinateOption(
   }
 
   return parsed;
+}
+
+export function parseDateOption(
+  value: string | undefined,
+  now: Date = new Date(),
+): { dateKey: string; isToday: boolean } {
+  const todayDateKey = formatDateKey(now);
+  if (!value) {
+    return {
+      dateKey: todayDateKey,
+      isToday: true,
+    };
+  }
+
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    throw new Error('--date format must be yyyy-mm-dd.');
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const probe = new Date(year, month - 1, day);
+  if (
+    probe.getFullYear() !== year ||
+    probe.getMonth() !== month - 1 ||
+    probe.getDate() !== day
+  ) {
+    throw new Error('--date must be a valid calendar date.');
+  }
+
+  const dateKey = `${match[1]}-${match[2]}-${match[3]}`;
+  return {
+    dateKey,
+    isToday: dateKey === todayDateKey,
+  };
 }
 
 function configureRuntimeOptions(options: {
@@ -107,11 +145,17 @@ function resolveLocationInput(options: CommonCommandOptions): ResolveLocationInp
 async function executeList(options: ListCommandOptions): Promise<void> {
   configureRuntimeOptions(options);
 
+  const dateOption = parseDateOption(options.date);
+  if (options.sync && !dateOption.isToday) {
+    throw new Error('--sync can be used only when --date is today.');
+  }
+
   const locationRequest = resolveLocationRequest(resolveLocationInput(options));
   const loaded = await loadWeather({
     request: locationRequest,
     cacheDir: config.WEATHERCLI_CACHE_DIR,
     cacheTtlMinutes: config.WEATHERCLI_CACHE_TTL_MINUTES,
+    dateKey: dateOption.dateKey,
     forceSync: Boolean(options.sync),
   });
 
@@ -126,11 +170,17 @@ async function executeList(options: ListCommandOptions): Promise<void> {
 async function executeSync(options: SyncCommandOptions): Promise<void> {
   configureRuntimeOptions(options);
 
+  const dateOption = parseDateOption(options.date);
+  if (!dateOption.isToday) {
+    throw new Error('weather sync only supports today.');
+  }
+
   const locationRequest = resolveLocationRequest(resolveLocationInput(options));
   const loaded = await loadWeather({
     request: locationRequest,
     cacheDir: config.WEATHERCLI_CACHE_DIR,
     cacheTtlMinutes: config.WEATHERCLI_CACHE_TTL_MINUTES,
+    dateKey: dateOption.dateKey,
     forceSync: true,
   });
 
@@ -149,7 +199,7 @@ async function executeSync(options: SyncCommandOptions): Promise<void> {
   }
 
   console.log('Sync completed.');
-  console.log(`Cache key: ${loaded.cacheKey}`);
+  console.log(`Date: ${loaded.dateKey}`);
   console.log(`Cache dir: ${config.WEATHERCLI_CACHE_DIR}`);
   console.log(formatWeatherReport(loaded));
 }
@@ -168,6 +218,7 @@ function configureLocationOptions(command: Command): Command {
 
 function configureRuntimeFlags(command: Command): Command {
   return command
+    .option('-d, --date <yyyy-mm-dd>', 'Read/write a specific date snapshot (default: today)')
     .option('-j, --json', 'Output as JSON')
     .option('--cache-dir <path>', 'Override cache directory')
     .option('--cache-ttl-minutes <minutes>', 'Cache freshness window in minutes');
@@ -189,13 +240,13 @@ function buildProgram(): Command {
         .description('Show current weather and 3-day forecast'),
     ),
   )
-    .option('--sync', 'Force refresh and bypass cache')
+    .option('--sync', 'Force refresh and bypass cache (today only)')
     .action(async (options) => {
       await executeList(options as ListCommandOptions);
     });
 
   configureRuntimeFlags(
-    configureLocationOptions(program.command('sync').description('Force refresh cache now')),
+    configureLocationOptions(program.command('sync').description('Force refresh cache now (today only)')),
   ).action(async (options) => {
     await executeSync(options as SyncCommandOptions);
   });

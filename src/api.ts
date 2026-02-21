@@ -30,6 +30,28 @@ export type OpenMeteoWeatherResponse = {
   };
 };
 
+export type NominatimAddress = {
+  country?: string;
+  country_code?: string;
+  city?: string;
+  town?: string;
+  municipality?: string;
+  village?: string;
+  suburb?: string;
+  borough?: string;
+  quarter?: string;
+  county?: string;
+  state?: string;
+  province?: string;
+  region?: string;
+  state_district?: string;
+  [key: string]: string | undefined;
+};
+
+export type NominatimReverseResponse = {
+  address?: NominatimAddress;
+};
+
 export async function detectLocationByIP(): Promise<IpDetectedLocation> {
   const response = await axios.get<IpApiResponse>('http://ip-api.com/json/', {
     timeout: 10_000,
@@ -77,6 +99,33 @@ export async function fetchWeatherByCoordinates(
   const payload = response.data;
   if (!payload.current_weather || !payload.daily) {
     throw new Error('Open-Meteo response is missing required fields.');
+  }
+
+  return payload;
+}
+
+export async function reverseGeocodeByCoordinates(
+  latitude: number,
+  longitude: number,
+): Promise<NominatimReverseResponse> {
+  const response = await axios.get<NominatimReverseResponse>(
+    'https://nominatim.yuiseki.net/reverse',
+    {
+      params: {
+        format: 'jsonv2',
+        lat: latitude,
+        lon: longitude,
+        addressdetails: 1,
+        zoom: 18,
+        'accept-language': 'en',
+      },
+      timeout: 10_000,
+    },
+  );
+
+  const payload = response.data;
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Nominatim response is invalid.');
   }
 
   return payload;

@@ -18,3 +18,16 @@ The CLI uses this API for current conditions and daily forecast.
 - Endpoint: `http://ip-api.com/json/`
 
 When no city or coordinates are specified, this API is used to detect current location. If IP detection fails, the CLI falls back to Tokyo.
+
+## Reverse Geocoding API
+
+- Endpoint: `https://nominatim.yuiseki.net/reverse`
+- Parameters:
+  - `format=jsonv2`
+  - `lat`
+  - `lon`
+  - `addressdetails=1`
+  - `zoom=18`
+  - `accept-language=en`
+
+The reverse geocoder result is used to generate cache hierarchy paths such as `japan/tokyo/taito`.

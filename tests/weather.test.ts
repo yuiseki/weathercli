@@ -1,6 +1,5 @@
 import { expect, test } from 'vitest';
 import {
-  buildCacheKey,
   resolveLocationRequest,
   resolvePresetCityKey,
   weatherCodeToLabel,
@@ -54,14 +53,6 @@ test('resolveLocationRequest rejects unsupported city names', () => {
   expect(() => resolveLocationRequest({ city: 'kyoto' })).toThrow(
     '--city must be one of: tokyo, osaka, nagoya, sapporo, fukuoka',
   );
-});
-
-test('buildCacheKey returns stable keys by request type', () => {
-  expect(buildCacheKey({ type: 'ip' })).toBe('current');
-  expect(buildCacheKey({ type: 'preset', cityKey: 'nagoya' })).toBe('nagoya');
-  expect(
-    buildCacheKey({ type: 'coordinates', latitude: 35.7126, longitude: 139.7799 }),
-  ).toBe('lat_35_7126_lon_139_7799');
 });
 
 test('weatherCodeToLabel resolves known and unknown codes', () => {

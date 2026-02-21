@@ -1,6 +1,26 @@
-import { detectLocationByIP, fetchWeatherByCoordinates, type OpenMeteoWeatherResponse } from './api';
-import { getCacheDir, isCacheFresh, loadCache, saveCache } from './storage';
-import { type ForecastDay, type PresetCityKey, type ResolvedLocation, type WeatherCache, type WeatherSnapshot } from './types';
+import {
+  detectLocationByIP,
+  fetchWeatherByCoordinates,
+  reverseGeocodeByCoordinates,
+  type NominatimAddress,
+  type OpenMeteoWeatherResponse,
+} from './api';
+import {
+  describeHierarchyPath,
+  formatDateKey,
+  getCacheDir,
+  isCacheFresh,
+  loadCache,
+  saveCache,
+} from './storage';
+import {
+  type ForecastDay,
+  type LocationHierarchy,
+  type PresetCityKey,
+  type ResolvedLocation,
+  type WeatherCache,
+  type WeatherSnapshot,
+} from './types';
 
 export const PRESET_CITIES: Record<PresetCityKey, { name: string; latitude: number; longitude: number }> = {
   tokyo: { name: 'Tokyo', latitude: 35.6895, longitude: 139.6917 },
@@ -8,6 +28,56 @@ export const PRESET_CITIES: Record<PresetCityKey, { name: string; latitude: numb
   nagoya: { name: 'Nagoya', latitude: 35.1815, longitude: 136.9066 },
   sapporo: { name: 'Sapporo', latitude: 43.0611, longitude: 141.3564 },
   fukuoka: { name: 'Fukuoka', latitude: 33.5904, longitude: 130.4017 },
+};
+
+const JAPAN_PREFECTURE_BY_ISO3166_LEVEL4: Record<string, string> = {
+  'JP-01': 'hokkaido',
+  'JP-02': 'aomori',
+  'JP-03': 'iwate',
+  'JP-04': 'miyagi',
+  'JP-05': 'akita',
+  'JP-06': 'yamagata',
+  'JP-07': 'fukushima',
+  'JP-08': 'ibaraki',
+  'JP-09': 'tochigi',
+  'JP-10': 'gunma',
+  'JP-11': 'saitama',
+  'JP-12': 'chiba',
+  'JP-13': 'tokyo',
+  'JP-14': 'kanagawa',
+  'JP-15': 'niigata',
+  'JP-16': 'toyama',
+  'JP-17': 'ishikawa',
+  'JP-18': 'fukui',
+  'JP-19': 'yamanashi',
+  'JP-20': 'nagano',
+  'JP-21': 'gifu',
+  'JP-22': 'shizuoka',
+  'JP-23': 'aichi',
+  'JP-24': 'mie',
+  'JP-25': 'shiga',
+  'JP-26': 'kyoto',
+  'JP-27': 'osaka',
+  'JP-28': 'hyogo',
+  'JP-29': 'nara',
+  'JP-30': 'wakayama',
+  'JP-31': 'tottori',
+  'JP-32': 'shimane',
+  'JP-33': 'okayama',
+  'JP-34': 'hiroshima',
+  'JP-35': 'yamaguchi',
+  'JP-36': 'tokushima',
+  'JP-37': 'kagawa',
+  'JP-38': 'ehime',
+  'JP-39': 'kochi',
+  'JP-40': 'fukuoka',
+  'JP-41': 'saga',
+  'JP-42': 'nagasaki',
+  'JP-43': 'kumamoto',
+  'JP-44': 'oita',
+  'JP-45': 'miyazaki',
+  'JP-46': 'kagoshima',
+  'JP-47': 'okinawa',
 };
 
 export type LocationRequest =
@@ -30,13 +100,15 @@ export type LoadWeatherOptions = {
   request: LocationRequest;
   cacheDir: string;
   cacheTtlMinutes: number;
+  dateKey?: string;
   forceSync?: boolean;
   now?: Date;
 };
 
 export type LoadedWeather = {
   fromCache: boolean;
-  cacheKey: string;
+  dateKey: string;
+  hierarchyPath: string;
   snapshot: WeatherSnapshot;
 };
 
@@ -83,11 +155,6 @@ const WEATHER_CODE_LABELS: Record<number, string> = {
   96: 'Thunderstorm with slight hail',
   99: 'Thunderstorm with heavy hail',
 };
-
-function formatCoordinateForKey(value: number): string {
-  const fixed = value.toFixed(4);
-  return fixed.replace('-', 'm').replace('.', '_');
-}
 
 function formatCoordinateLabel(value: number): string {
   return value.toFixed(4);
@@ -202,13 +269,6 @@ export function resolveLocationRequest(input: ResolveLocationInput): LocationReq
   return { type: 'ip' };
 }
 
-export function buildCacheKey(request: LocationRequest): string {
-  if (request.type === 'ip') return 'current';
-  if (request.type === 'preset') return request.cityKey;
-
-  return `lat_${formatCoordinateForKey(request.latitude)}_lon_${formatCoordinateForKey(request.longitude)}`;
-}
-
 export function weatherCodeToLabel(code: number): string {
   return WEATHER_CODE_LABELS[code] || 'Unknown';
 }
@@ -254,8 +314,113 @@ function toForecastDays(apiResponse: OpenMeteoWeatherResponse, limit: number = 3
   return forecast;
 }
 
+function normalizeAdminSegment(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+
+  const normalized = value
+    .replace(/\b(prefecture|metropolis|province|state|region|county)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return normalized || undefined;
+}
+
+function normalizeLocalitySegment(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+
+  const normalized = value
+    .replace(/\b(ward|city|district|municipality|county)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return normalized || undefined;
+}
+
+function pickAddressValue(address: NominatimAddress | undefined, keys: string[]): string | undefined {
+  if (!address) return undefined;
+
+  for (const key of keys) {
+    const value = address[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function fallbackHierarchy(location: ResolvedLocation): LocationHierarchy {
+  const preset = location.presetKey ? PRESET_CITIES[location.presetKey] : undefined;
+
+  return {
+    country: 'unknown',
+    state: preset?.name || 'unknown',
+    locality: preset?.name || 'unknown',
+    source: 'fallback',
+    raw: {},
+  };
+}
+
+function hierarchyFromNominatimAddress(
+  address: NominatimAddress,
+  location: ResolvedLocation,
+): LocationHierarchy {
+  const countryCode = address.country_code?.toUpperCase();
+  const iso3166Level4 = address['ISO3166-2-lvl4'];
+
+  let state = normalizeAdminSegment(
+    pickAddressValue(address, ['province', 'state', 'state_district', 'region', 'county']),
+  );
+
+  if (!state && countryCode === 'JP' && iso3166Level4) {
+    state = JAPAN_PREFECTURE_BY_ISO3166_LEVEL4[iso3166Level4];
+  }
+
+  const locality = normalizeLocalitySegment(
+    pickAddressValue(address, [
+      'city',
+      'town',
+      'municipality',
+      'borough',
+      'suburb',
+      'quarter',
+      'village',
+      'hamlet',
+      'county',
+    ]),
+  );
+
+  const fallback = fallbackHierarchy(location);
+
+  return {
+    country: address.country || (countryCode === 'JP' ? 'Japan' : countryCode?.toLowerCase()) || fallback.country,
+    state: state || fallback.state,
+    locality: locality || fallback.locality,
+    source: 'nominatim',
+    raw: {
+      countryCode,
+      iso3166Level4,
+    },
+  };
+}
+
+async function resolveLocationHierarchy(location: ResolvedLocation): Promise<LocationHierarchy> {
+  try {
+    const reverse = await reverseGeocodeByCoordinates(location.latitude, location.longitude);
+    if (reverse.address) {
+      return hierarchyFromNominatimAddress(reverse.address, location);
+    }
+  } catch (_error) {
+    // fallback below
+  }
+
+  return fallbackHierarchy(location);
+}
+
 function buildSnapshot(
   location: ResolvedLocation,
+  hierarchy: LocationHierarchy,
+  dateKey: string,
   apiResponse: OpenMeteoWeatherResponse,
   now: Date = new Date(),
 ): WeatherSnapshot {
@@ -281,7 +446,9 @@ function buildSnapshot(
 
   return {
     updatedAt: now.toISOString(),
+    dateKey,
     location,
+    hierarchy,
     current: {
       observedAt: current.time,
       temperatureC: current.temperature,
@@ -303,35 +470,59 @@ function formatWindSpeed(value: number): string {
 }
 
 export async function loadWeather(options: LoadWeatherOptions): Promise<LoadedWeather> {
-  const cacheRoot = getCacheDir(options.cacheDir);
-  const cacheKey = buildCacheKey(options.request);
-  const nowMs = (options.now || new Date()).getTime();
+  const now = options.now || new Date();
+  const nowMs = now.getTime();
+  const todayDateKey = formatDateKey(now);
+  const dateKey = options.dateKey || todayDateKey;
+  const isToday = dateKey === todayDateKey;
 
-  if (!options.forceSync) {
-    const cached = loadCache(cacheRoot, cacheKey);
-    if (cached && isCacheFresh(cached, options.cacheTtlMinutes, nowMs)) {
-      return {
-        fromCache: true,
-        cacheKey,
-        snapshot: cached.snapshot,
-      };
-    }
+  if (options.forceSync && !isToday) {
+    throw new Error('--sync is only supported for today.');
   }
 
+  const cacheRoot = getCacheDir(options.cacheDir);
   const location = await resolveLocation(options.request);
+  const hierarchy = await resolveLocationHierarchy(location);
+  const hierarchyPath = describeHierarchyPath(hierarchy);
+  const cached = loadCache(cacheRoot, dateKey, hierarchy);
+
+  if (!isToday) {
+    if (!cached) {
+      throw new Error(`No cache snapshot for ${dateKey} (${hierarchyPath}).`);
+    }
+
+    return {
+      fromCache: true,
+      dateKey,
+      hierarchyPath,
+      snapshot: cached.snapshot,
+    };
+  }
+
+  if (!options.forceSync && cached && isCacheFresh(cached, options.cacheTtlMinutes, nowMs)) {
+    return {
+      fromCache: true,
+      dateKey,
+      hierarchyPath,
+      snapshot: cached.snapshot,
+    };
+  }
+
   const apiResponse = await fetchWeatherByCoordinates(location.latitude, location.longitude);
-  const snapshot = buildSnapshot(location, apiResponse, options.now || new Date());
+  const snapshot = buildSnapshot(location, hierarchy, dateKey, apiResponse, now);
 
   const cachePayload: WeatherCache = {
-    version: 1,
-    cacheKey,
+    version: 2,
+    dateKey,
+    locationPath: hierarchy,
     snapshot,
   };
-  saveCache(cacheRoot, cacheKey, cachePayload);
+  saveCache(cacheRoot, dateKey, hierarchy, cachePayload);
 
   return {
     fromCache: false,
-    cacheKey,
+    dateKey,
+    hierarchyPath,
     snapshot,
   };
 }
@@ -342,10 +533,12 @@ export function formatWeatherReport(loaded: LoadedWeather): string {
   const lines: string[] = [];
 
   lines.push(`weather (${modeLabel})`);
+  lines.push(`Date: ${loaded.dateKey}`);
   lines.push(`Location: ${snapshot.location.name}`);
   lines.push(
     `Coordinates: ${snapshot.location.latitude.toFixed(4)}, ${snapshot.location.longitude.toFixed(4)}`,
   );
+  lines.push(`Cache path: ${loaded.hierarchyPath}`);
   lines.push(`Updated: ${snapshot.updatedAt}`);
   lines.push(`Current: ${formatTemperature(snapshot.current.temperatureC)}, ${snapshot.current.weatherLabel}`);
   lines.push(`Wind: ${formatWindSpeed(snapshot.current.windSpeedKmh)}`);
