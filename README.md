@@ -2,6 +2,9 @@
 
 Weather CLI for current conditions and 3-day forecast using Open-Meteo.
 
+Requires Node.js 22.23.4, 24.22.1, or 26.12.1 or newer within those release
+lines. These minimum versions include the October 2026 security fixes.
+
 ## Install
 
 ```bash
